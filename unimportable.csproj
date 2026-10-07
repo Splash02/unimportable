@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <Version>1.0.0</Version>
+    <AssemblyName>unimportable</AssemblyName>
+    <RootNamespace>Unimportable</RootNamespace>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <GameDirectory Condition="'$(GameDirectory)' == ''">$(UNBEATABLE_GAME_DIRECTORY)</GameDirectory>
+    <GameDirectory Condition="'$(GameDirectory)' == '' and '$(OS)' == 'Windows_NT'">$(MSBuildProgramFiles32)/Steam/steamapps/common/UNBEATABLE</GameDirectory>
+    <ManagedDirectory>$(GameDirectory)/UNBEATABLE_Data/Managed</ManagedDirectory>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove=".tools/**/*.cs" />
+    <PackageReference Include="SharpCompress" Version="0.50.4" />
+    <EmbeddedResource Include="ThirdPartyNotices.txt" />
+    <Reference Include="BepInEx" HintPath="$(GameDirectory)/BepInEx/core/BepInEx.dll" Private="false" />
+    <Reference Include="0Harmony" HintPath="$(GameDirectory)/BepInEx/core/0Harmony.dll" Private="false" />
+    <Reference Include="Assembly-CSharp" HintPath="$(ManagedDirectory)/Assembly-CSharp.dll" Private="false" />
+    <Reference Include="UnityEngine" HintPath="$(ManagedDirectory)/UnityEngine.dll" Private="false" />
+    <Reference Include="UnityEngine.CoreModule" HintPath="$(ManagedDirectory)/UnityEngine.CoreModule.dll" Private="false" />
+  </ItemGroup>
+  <Target Name="EmbedDependencies" BeforeTargets="AssignTargetPaths" DependsOnTargets="ResolveReferences">
+    <ItemGroup>
+      <EmbeddedResource Include="@(ReferenceCopyLocalPaths)" Condition="'%(ReferenceCopyLocalPaths.Extension)' == '.dll'">
+        <LogicalName>Unimportable.Dependencies.%(Filename)%(Extension)</LogicalName>
+      </EmbeddedResource>
+    </ItemGroup>
+  </Target>
+  <Target Name="ValidateGameDirectory" BeforeTargets="ResolveReferences">
+    <Error Condition="'$(GameDirectory)' == ''" Text="Set GameDirectory to your UNBEATABLE installation." />
+    <Error Condition="!Exists('$(ManagedDirectory)/Assembly-CSharp.dll')" Text="Assembly-CSharp.dll is missing. Set GameDirectory to your UNBEATABLE installation." />
+    <Error Condition="!Exists('$(GameDirectory)/BepInEx/core/BepInEx.dll')" Text="BepInEx 5 is missing from the game installation." />
+    <Error Condition="!Exists('$(GameDirectory)/BepInEx/core/0Harmony.dll')" Text="0Harmony.dll is missing from the BepInEx installation." />
+  </Target>
+</Project>
