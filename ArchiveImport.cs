@@ -3,11 +3,9 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
-using System.Text.RegularExpressions;
 using System.Threading;
 using SharpCompress.Archives;
 using SharpCompress.Common;
-using SharpCompress.Crypto;
 using SharpCompress.Readers;
 
 namespace Unimportable;
@@ -15,7 +13,6 @@ namespace Unimportable;
 internal sealed class ArchiveImport : IDisposable
 {
     private const long SizeLimit = 2_147_483_648;
-    private static readonly Regex ReservedName = new(@"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)", RegexOptions.IgnoreCase);
     private readonly string workspace;
     private readonly byte[] fingerprint;
     private readonly long sourceSize;
@@ -38,6 +35,7 @@ internal sealed class ArchiveImport : IDisposable
 
     internal static ArchiveImport Prepare(string source, string songs, CancellationToken token)
     {
+        token.ThrowIfCancellationRequested();
         source = Path.GetFullPath(source);
         if (!File.Exists(source) || (File.GetAttributes(source) & FileAttributes.ReparsePoint) != 0)
         {
@@ -64,7 +62,7 @@ internal sealed class ArchiveImport : IDisposable
                     throw new InvalidDataException("archive is empty or larger than 2 gb");
                 }
 
-                Copy(input, output, SizeLimit, token);
+                input.CopyTo(output);
             }
 
             byte[] fingerprint;
@@ -109,149 +107,27 @@ internal sealed class ArchiveImport : IDisposable
 
     private static void Extract(string path, string folder, CancellationToken token)
     {
+        token.ThrowIfCancellationRequested();
         using var input = File.OpenRead(path);
-        var signature = new byte[6];
-        input.Read(signature, 0, signature.Length);
-        input.Position = 0;
-        var indexed = signature.SequenceEqual(new byte[] { 0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c })
-            || signature[0] == 0x50 && signature[1] == 0x4b
-            || signature[0] == 0x52 && signature[1] == 0x61 && signature[2] == 0x72 && signature[3] == 0x21;
-        using var archive = indexed ? ArchiveFactory.OpenArchive(input, new ReaderOptions { LeaveStreamOpen = true }) : null;
-        using var reader = archive != null
-            ? archive.IsSolid || archive.Type == ArchiveType.SevenZip ? archive.ExtractAllEntries() : null
-            : ReaderFactory.OpenReader(input, new ReaderOptions { LeaveStreamOpen = true });
-        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var count = 0;
-        long size = 0;
-        if (reader == null)
+        var information = ArchiveFactory.GetArchiveInformation(input);
+        using var archive = information?.SupportsRandomAccess == true ? ArchiveFactory.OpenArchive(input) : null;
+        var options = ExtractionOptions.SafeExtract;
+        if (archive != null)
         {
-            foreach (var entry in archive!.Entries)
-            {
-                ExtractEntry(entry, entry.OpenEntryStream, archive.Type, folder, names, ref count, ref size, token);
-            }
+            archive.WriteToDirectory(folder, options);
         }
         else
         {
-            while (reader.MoveToNextEntry())
-            {
-                ExtractEntry(reader.Entry, () => reader.OpenEntryStream(), reader.Type, folder, names, ref count, ref size, token);
-            }
+            using var reader = ReaderFactory.OpenReader(input);
+            reader.WriteAllToDirectory(folder, options);
         }
 
-        if (archive != null && !archive.IsComplete)
-        {
-            throw new InvalidDataException("archive is incomplete");
-        }
-    }
-
-    private static void ExtractEntry(IEntry entry, Func<Stream> open, ArchiveType type, string folder,
-        HashSet<string> names, ref int count, ref long size, CancellationToken token)
-    {
         token.ThrowIfCancellationRequested();
-        var attributes = 0;
-        try
-        {
-            attributes = entry.Attrib ?? 0;
-        }
-        catch (NotImplementedException)
-        {
-        }
-        if (++count > 10_000 || entry.IsEncrypted || entry.IsSplitAfter || entry.VolumeIndexFirst != entry.VolumeIndexLast)
-        {
-            throw new InvalidDataException("archive is encrypted, split or contains too many entries");
-        }
-
-        if (!string.IsNullOrEmpty(entry.LinkTarget) || (attributes & (int)FileAttributes.ReparsePoint) != 0
-            || (attributes & 0xf000) == 0xa000 || ((attributes >> 16) & 0xf000) == 0xa000)
-        {
-            throw new InvalidDataException("archive contains a link");
-        }
-
-        var name = (entry.Key ?? string.Empty).Replace('\\', '/');
-        while (name.StartsWith("./", StringComparison.Ordinal))
-        {
-            name = name.Substring(2);
-        }
-
-        if (entry.IsDirectory)
-        {
-            name = name.TrimEnd('/', '\\');
-            if (name.Length == 0 || name == ".")
-            {
-                return;
-            }
-        }
-
-        var target = SafePath(folder, name);
-        if (entry.IsDirectory)
-        {
-            Directory.CreateDirectory(target);
-            return;
-        }
-
-        if (!names.Add(target) || entry.Size < 0 || entry.Size > SizeLimit - size)
-        {
-            throw new InvalidDataException("archive contains duplicate files or is larger than 2 gb unpacked");
-        }
-
-        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-        using var source = open();
-        using var destination = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-        using var checksum = new Crc32Stream(destination);
-        var written = Copy(source, checksum, SizeLimit - size, token);
-        if (entry.Size != 0 && written != entry.Size)
-        {
-            throw new InvalidDataException("archive is incomplete");
-        }
-
-        if (type == ArchiveType.Zip && checksum.Crc != unchecked((uint)entry.Crc))
-        {
-            throw new InvalidDataException("archive checksum does not match");
-        }
-
-        size += written;
-    }
-
-    private static long Copy(Stream source, Stream destination, long limit, CancellationToken token)
-    {
-        var buffer = new byte[65536];
-        long written = 0;
-        int count;
-        while ((count = source.Read(buffer, 0, buffer.Length)) > 0)
-        {
-            token.ThrowIfCancellationRequested();
-            if (count > limit - written)
-            {
-                throw new InvalidDataException("archive is larger than 2 gb unpacked");
-            }
-
-            destination.Write(buffer, 0, count);
-            written += count;
-        }
-
-        return written;
     }
 
     internal static string SafePath(string root, string name)
     {
-        name = name.Replace('\\', '/');
-        while (name.StartsWith("./", StringComparison.Ordinal))
-        {
-            name = name.Substring(2);
-        }
-
-        var parts = name.Split('/');
-        foreach (var part in parts)
-        {
-            if (part.Length == 0 || part == "." || part == ".." || part.EndsWith(" ", StringComparison.Ordinal)
-                || part.EndsWith(".", StringComparison.Ordinal) || part.IndexOfAny(new[] { ':', '<', '>', '"', '|', '?', '*', '\0' }) >= 0
-                || part.Any(char.IsControl) || ReservedName.IsMatch(part))
-            {
-                throw new InvalidDataException("archive contains an unsafe path");
-            }
-        }
-
-        var path = Path.GetFullPath(Path.Combine(root, Path.Combine(parts)));
+        var path = Path.GetFullPath(Path.Combine(root, name));
         var prefix = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         if (!path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
         {
