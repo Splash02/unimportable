@@ -33,7 +33,7 @@ internal sealed class ArchiveImport : IDisposable
         Folders = folders;
     }
 
-    internal static ArchiveImport Prepare(string source, string songs, CancellationToken token)
+    internal static ArchiveImport Prepare(string source, string songs, bool deleteVideos, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         source = Path.GetFullPath(source);
@@ -88,6 +88,20 @@ internal sealed class ArchiveImport : IDisposable
                 if (folders.Any(other => other != folder && folder.StartsWith(other + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)))
                 {
                     throw new InvalidDataException("song folders must not contain other song folders");
+                }
+
+                if (deleteVideos)
+                {
+                    foreach (var path in Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories))
+                    {
+                        token.ThrowIfCancellationRequested();
+                        var extension = Path.GetExtension(path);
+                        if (extension.Equals(".mp4", StringComparison.OrdinalIgnoreCase)
+                            || extension.Equals(".webm", StringComparison.OrdinalIgnoreCase))
+                        {
+                            File.Delete(path);
+                        }
+                    }
                 }
 
                 foreach (var chart in GetCharts(folder))

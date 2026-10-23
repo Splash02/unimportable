@@ -22,14 +22,15 @@ public sealed class Plugin : BaseUnityPlugin
 
     private readonly ConcurrentQueue<string[]> drops = new();
     private readonly ConcurrentQueue<string> errors = new();
-    private readonly Queue<(string Path, bool Delete)> pending = new();
+    private readonly Queue<(string Path, bool Delete, bool DeleteVideos)> pending = new();
     private readonly CancellationTokenSource cancellation = new();
     private ConfigEntry<bool> deleteSource = null!;
+    private ConfigEntry<bool> deleteVideos = null!;
     private FileDrop? fileDrop;
     private Harmony? patches;
     private Task<ArchiveImport>? preparation;
     private Task<string?>? finishing;
-    private (string Path, bool Delete) active;
+    private (string Path, bool Delete, bool DeleteVideos) active;
     private string songs = string.Empty;
     private bool hookFailed;
 
@@ -37,6 +38,7 @@ public sealed class Plugin : BaseUnityPlugin
     {
         Dependencies.Initialize();
         deleteSource = Config.Bind("Import", "DeleteSourceArchive", true, "Delete the dropped source archive after a successful import");
+        deleteVideos = Config.Bind("Import", "DeleteVideoFiles", false, "Remove all MP4 and WebM files from imported song folders, including subfolders, to save disk space");
         songs = Path.Combine(Application.persistentDataPath, "CustomSongs");
         patches = new Harmony(Id);
         patches.PatchAll(typeof(Plugin).Assembly);
@@ -88,7 +90,7 @@ public sealed class Plugin : BaseUnityPlugin
 
             foreach (var path in files)
             {
-                pending.Enqueue((path, deleteSource.Value));
+                pending.Enqueue((path, deleteSource.Value, deleteVideos.Value));
             }
         }
 
@@ -129,9 +131,10 @@ public sealed class Plugin : BaseUnityPlugin
         {
             active = pending.Dequeue();
             var source = active.Path;
+            var removeVideos = active.DeleteVideos;
             var token = cancellation.Token;
             Logger.LogInfo("importing " + Path.GetFileName(source));
-            preparation = Task.Run(() => ArchiveImport.Prepare(source, songs, token), token);
+            preparation = Task.Run(() => ArchiveImport.Prepare(source, songs, removeVideos, token), token);
         }
     }
 
